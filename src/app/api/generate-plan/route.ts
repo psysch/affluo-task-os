@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { NextRequest } from 'next/server';
 
 const SYSTEM_PROMPT = `You are a daily execution planner and accountability assistant.
@@ -74,8 +74,10 @@ export async function POST(req: NextRequest) {
   try {
     const { notes } = await req.json();
 
-    const client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      systemInstruction: SYSTEM_PROMPT,
     });
 
     const today = new Date().toLocaleDateString('en-GB', {
@@ -89,35 +91,15 @@ export async function POST(req: NextRequest) {
       ? `Today is ${today}. Additional context for today: ${notes}\n\nGenerate my daily execution plan.`
       : `Today is ${today}. Generate my daily execution plan.`;
 
-    const stream = client.messages.stream({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 2048,
-      system: [
-        {
-          type: 'text',
-          text: SYSTEM_PROMPT,
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      messages: [
-        {
-          role: 'user',
-          content: userMessage,
-        },
-      ],
-    });
+    const result = await model.generateContentStream(userMessage);
 
     const encoder = new TextEncoder();
     const readable = new ReadableStream({
       async start(controller) {
         try {
-          for await (const event of stream) {
-            if (
-              event.type === 'content_block_delta' &&
-              event.delta.type === 'text_delta'
-            ) {
-              controller.enqueue(encoder.encode(event.delta.text));
-            }
+          for await (const chunk of result.stream) {
+            const text = chunk.text();
+            if (text) controller.enqueue(encoder.encode(text));
           }
           controller.close();
         } catch (err) {
@@ -130,7 +112,6 @@ export async function POST(req: NextRequest) {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'Transfer-Encoding': 'chunked',
-        'X-Content-Type-Options': 'nosniff',
       },
     });
   } catch (err) {
